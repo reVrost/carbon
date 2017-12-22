@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 
@@ -12,16 +11,24 @@ import (
 	term "github.com/nsf/termbox-go"
 	"github.com/spf13/viper"
 	"golang.org/x/crypto/ssh"
+	git "gopkg.in/src-d/go-git.v4"
 	gitssh "gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
 type Repos struct {
-	Name string `json:name`
+	Name string `json:"name"`
 }
 
 type MenuState struct {
 	selectedIndex int
 	repos         []Repos
+}
+
+type PromptConfig struct {
+	name         string `json:"name"`
+	message      string `json:"message"`
+	defaultValue string `json:"default_value,omitempty"`
+	promptType   string `json:"prompt_type,omitempty"`
 }
 
 func printTitle() {
@@ -56,7 +63,7 @@ func drawMenu(state *MenuState, delta int) {
 
 func main() {
 	term.Init()
-	defer term.Close()
+	// defer term.Close()
 	printTitle()
 	viper.SetConfigName("config") // name of config file (without extension)
 	viper.AddConfigPath(".")      // optionally look for config in the working directory
@@ -89,54 +96,80 @@ func main() {
 	}
 
 	drawMenu(state, 0)
+eventLoop:
 	for {
 		switch ev := term.PollEvent(); ev.Type {
 		case term.EventKey:
 			switch ev.Key {
 			case term.KeyEsc:
-				fmt.Println("Exited.")
-				os.Exit(0)
+				fallthrough
 			case term.KeyCtrlC:
-				fmt.Println("Exited.")
-				os.Exit(0)
+				fallthrough
 			case term.KeyCtrlZ:
 				fmt.Println("Exited.")
-				os.Exit(0)
+				break eventLoop
 			case term.KeyArrowUp:
 				drawMenu(state, -1)
 			case term.KeyArrowDown:
 				drawMenu(state, 1)
 			case term.KeyEnter:
-				fmt.Println("Enter")
-				os.Exit(0)
-				// drawMenu(state, term.KeyEnter)
+				runCloner(state)
+				break eventLoop
 			default:
 				// we only want to read a single character or one key pressed event
-				fmt.Println("ASCII : ", ev.Ch)
+				// fmt.Println("ASCII : ", ev.Ch)
 
 			}
 		case term.EventError:
 			panic(ev.Err)
 		}
 	}
+	fmt.Println("DOnej")
+	// reader := bufio.NewReader(os.Stdin)
+	// fmt.Print("Enter text: ")
+	// text, _ := reader.ReadString('\n')
+	// fmt.Println(text)
+}
 
-	log.Printf("Cloning: %v", arr[0].Name)
+func runCloner(state *MenuState) {
+	repoName := state.repos[state.selectedIndex].Name
+	fmt.Println("Cloning: ", repoName)
+	auth, err := getGitAuth()
+	if err != nil {
+		fmt.Println("Authentication Failed. Please add you ssh public key to $HOME/.ssh/id_rsa.")
+	}
 
-	// auth, err := getGitAuth()
-	// if err != nil {
-	// 	fmt.Println("Authentication Failed. Please add you ssh public key to $HOME/.ssh/id_rsa.")
-	// }
+	os.RemoveAll("./tmp")
+	_, err = git.PlainClone("./tmp/"+repoName, false, &git.CloneOptions{
+		URL:      "git@git.campmon.com:kenleyb/" + repoName + ".git",
+		Auth:     auth,
+		Progress: os.Stdout,
+	})
+	if err != nil {
+		fmt.Println("WDF", err)
+		return
+	}
 
-	// os.RemoveAll("./tmp")
-	// _, err = git.PlainClone("./tmp/"+arr[1].Name, false, &git.CloneOptions{
-	// 	URL:      "git@git.campmon.com:kenleyb/" + arr[1].Name + ".git",
-	// 	Auth:     auth,
-	// 	Progress: os.Stdout,
-	// })
-	// if err != nil {
-	// 	fmt.Println("WDF", err)
-	// 	return
-	// }
+	// Parse generator config
+	raw, err := ioutil.ReadFile("./tmp/" + repoName + "/carbon.json")
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+
+	var prompts []PromptConfig
+	json.Unmarshal(raw, &prompts)
+
+	// Ask for template input
+	fmt.Printf("%#v", string(raw))
+	fmt.Printf("\n%#v", prompts)
+	for _, x := range prompts {
+		fmt.Println(x.message)
+	}
+
+	// Apply templating
+
+	// Copy to final dest
 }
 
 func getGitAuth() (*gitssh.PublicKeys, error) {
