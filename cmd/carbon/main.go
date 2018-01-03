@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/fatih/color"
 	term "github.com/nsf/termbox-go"
@@ -48,7 +48,7 @@ func printTitle() {
 }
 
 func drawMenu(state *MenuState, delta int) {
-	term.Sync() // cosmestic purpose
+	term.Sync()
 	printTitle()
 	d := color.New(color.FgYellow, color.Bold)
 	u := color.New(color.FgWhite, color.Underline)
@@ -89,7 +89,6 @@ func main() {
 	}
 	var arr []Repos
 	_ = json.Unmarshal(body, &arr)
-	// log.Printf("Unmarshaled: %v", arr)
 
 	state := &MenuState{
 		repos:         arr,
@@ -138,6 +137,7 @@ eventLoop:
 }
 
 func runCloner(state *MenuState) {
+	// Grabbing Repo (Repo Fetcher/Template Fetcher)
 	repoName := state.repos[state.selectedIndex].Name
 	fmt.Println("\nSelected Repo -", repoName)
 	fmt.Println("Cloning: ", repoName)
@@ -146,8 +146,8 @@ func runCloner(state *MenuState) {
 		fmt.Println("Authentication Failed. Please add you ssh public key to $HOME/.ssh/id_rsa.")
 	}
 
-	os.RemoveAll("./tmp")
-	srcDir := "tmp/carbon/"
+	os.RemoveAll("./tmpl")
+	srcDir := "tmpl/carbon/"
 	repoDir := srcDir + repoName
 	_, err = git.PlainClone(repoDir, false, &git.CloneOptions{
 		URL:      "git@git.campmon.com:kenleyb/" + repoName + ".git",
@@ -158,8 +158,9 @@ func runCloner(state *MenuState) {
 		fmt.Println("WDF", err)
 		return
 	}
+	os.RemoveAll(repoDir + "/.git")
 
-	// Parse generator config
+	// Parse generator config (Config Parser)
 	raw, err := ioutil.ReadFile(repoDir + "/carbon.json")
 	if err != nil {
 		fmt.Println("carbon.json doesn't exist, couldn't template this project.")
@@ -174,6 +175,16 @@ func runCloner(state *MenuState) {
 	fmt.Printf("\nProject name: ")
 	projectName, _ := reader.ReadString('\n')
 	projectName = strings.TrimSpace(projectName)
+
+	if projectName == "" {
+		fmt.Println("Project name cannot be empty")
+		os.Exit(1)
+	}
+
+	if exists(projectName) {
+		fmt.Println("Dir " + projectName + " already exists")
+		os.Exit(1)
+	}
 
 	templateMap := make(map[string]string)
 	for _, x := range prompts {
@@ -194,32 +205,30 @@ func runCloner(state *MenuState) {
 	}
 
 	// Copy to final dest
-	//  destPath := "./" + projectName
-
 	e := filepath.Walk(repoDir, func(path string, f os.FileInfo, err error) error {
-		// fmt.Println(strings.TrimPrefix(path, repoDir))
 		destPath := projectName + strings.TrimPrefix(path, repoDir)
+
+		fi, err := os.Stat(path)
+		if fi.Mode().IsDir() {
+			os.MkdirAll(destPath, os.ModePerm)
+			return nil
+		} else if !fi.Mode().IsRegular() {
+			// Not a file not a dir skip
+			return nil
+		}
+
+		fmt.Printf("%s, dst: %s\n", path, destPath)
 		err = TemplateFile(path, destPath, templateMap)
 		return err
 	})
 
 	if e != nil {
+		os.RemoveAll(projectName)
 		panic(e)
 	}
-
-	// Apply templating
-	a, err := template.New("test").Parse("\n{{.moduleName}} are made out of {{.description}}\n")
-	if err != nil {
-		panic(err)
-	}
-	err = a.Execute(os.Stdout, templateMap)
-	if err != nil {
-		panic(err)
-	}
-
-	// Copy to final dest
 }
 
+// getGitAuth grabs git authentication key from home dir, TODO: windows
 func getGitAuth() (*gitssh.PublicKeys, error) {
 	s := fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME"))
 	sshKey, err := ioutil.ReadFile(s)
@@ -234,6 +243,17 @@ func getGitAuth() (*gitssh.PublicKeys, error) {
 	return auth, nil
 }
 
+// exists returns true if file/dir exists
+func exists(filePath string) (exists bool) {
+	exists = true
+
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		exists = false
+	}
+
+	return
+}
+
 // TemplateFile copies a file from src to dst and applies text templating.
 func TemplateFile(src, dst string, templateMap map[string]string) (err error) {
 	_, err = os.Stat(src)
@@ -241,43 +261,23 @@ func TemplateFile(src, dst string, templateMap map[string]string) (err error) {
 		return
 	}
 
-	// srcFile, err := os.Open(src)
-	// if err != nil {
-	// 	return
-	// }
-	// defer srcFile.Close()
-
 	dstFile, err := os.Create(dst)
 	if err != nil {
 		return
 	}
 	defer dstFile.Close()
 
-	// _, err = io.Copy(dstFile, srcFile)
-	// if err != nil {
-	// 	return
-	// }
-
-	// Template work
-	w := bufio.NewWriter(dstFile)
-	tmpl, err := template.ParseFiles(src)
+	tmpl, err := template.New(filepath.Base(src)).ParseFiles(src)
 	if err != nil {
-		return
-	}
-	err = tmpl.ExecuteTemplate(w, src, templateMap)
-	if err != nil {
+		fmt.Println("parse")
 		return
 	}
 
-	// err = dstFile.Sync()
-	// if err != nil {
-	// 	return
-	// }
-
-	// err = os.Chmod(dst, si.Mode())
-	// if err != nil {
-	// 	return
-	// }
+	err = tmpl.ExecuteTemplate(dstFile, filepath.Base(src), templateMap)
+	if err != nil {
+		fmt.Println("Execute template error")
+		return
+	}
 
 	return
 }
