@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
@@ -146,7 +147,9 @@ func runCloner(state *MenuState) {
 	}
 
 	os.RemoveAll("./tmp")
-	_, err = git.PlainClone("./tmp/"+repoName, false, &git.CloneOptions{
+	srcDir := "tmp/carbon/"
+	repoDir := srcDir + repoName
+	_, err = git.PlainClone(repoDir, false, &git.CloneOptions{
 		URL:      "git@git.campmon.com:kenleyb/" + repoName + ".git",
 		Auth:     auth,
 		Progress: os.Stdout,
@@ -157,7 +160,7 @@ func runCloner(state *MenuState) {
 	}
 
 	// Parse generator config
-	raw, err := ioutil.ReadFile("./tmp/" + repoName + "/carbon.json")
+	raw, err := ioutil.ReadFile(repoDir + "/carbon.json")
 	if err != nil {
 		fmt.Println("carbon.json doesn't exist, couldn't template this project.")
 		os.Exit(1)
@@ -190,8 +193,22 @@ func runCloner(state *MenuState) {
 		}
 	}
 
+	// Copy to final dest
+	//  destPath := "./" + projectName
+
+	e := filepath.Walk(repoDir, func(path string, f os.FileInfo, err error) error {
+		// fmt.Println(strings.TrimPrefix(path, repoDir))
+		destPath := projectName + strings.TrimPrefix(path, repoDir)
+		err = TemplateFile(path, destPath, templateMap)
+		return err
+	})
+
+	if e != nil {
+		panic(e)
+	}
+
 	// Apply templating
-	a, err := template.New("test").Parse("{{.moduleName}} are made out of {{.description}}\n")
+	a, err := template.New("test").Parse("\n{{.moduleName}} are made out of {{.description}}\n")
 	if err != nil {
 		panic(err)
 	}
@@ -215,4 +232,52 @@ func getGitAuth() (*gitssh.PublicKeys, error) {
 	}
 	auth := &gitssh.PublicKeys{User: "git", Signer: signer}
 	return auth, nil
+}
+
+// TemplateFile copies a file from src to dst and applies text templating.
+func TemplateFile(src, dst string, templateMap map[string]string) (err error) {
+	_, err = os.Stat(src)
+	if err != nil {
+		return
+	}
+
+	// srcFile, err := os.Open(src)
+	// if err != nil {
+	// 	return
+	// }
+	// defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return
+	}
+	defer dstFile.Close()
+
+	// _, err = io.Copy(dstFile, srcFile)
+	// if err != nil {
+	// 	return
+	// }
+
+	// Template work
+	w := bufio.NewWriter(dstFile)
+	tmpl, err := template.ParseFiles(src)
+	if err != nil {
+		return
+	}
+	err = tmpl.ExecuteTemplate(w, src, templateMap)
+	if err != nil {
+		return
+	}
+
+	// err = dstFile.Sync()
+	// if err != nil {
+	// 	return
+	// }
+
+	// err = os.Chmod(dst, si.Mode())
+	// if err != nil {
+	// 	return
+	// }
+
+	return
 }
