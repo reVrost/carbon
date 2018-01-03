@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/fatih/color"
 	term "github.com/nsf/termbox-go"
@@ -25,10 +28,10 @@ type MenuState struct {
 }
 
 type PromptConfig struct {
-	name         string `json:"name"`
-	message      string `json:"message"`
-	defaultValue string `json:"default_value,omitempty"`
-	promptType   string `json:"prompt_type,omitempty"`
+	Name         string `json:"name"`
+	Message      string `json:"message"`
+	DefaultValue string `json:"default_value,omitempty"`
+	PromptType   string `json:"prompt_type,omitempty"`
 }
 
 func printTitle() {
@@ -62,9 +65,6 @@ func drawMenu(state *MenuState, delta int) {
 }
 
 func main() {
-	term.Init()
-	// defer term.Close()
-	printTitle()
 	viper.SetConfigName("config") // name of config file (without extension)
 	viper.AddConfigPath(".")      // optionally look for config in the working directory
 	token := "507fe7c80e1024e93350934a2bdf775056bc7801"
@@ -95,7 +95,9 @@ func main() {
 		selectedIndex: 0,
 	}
 
+	term.Init()
 	drawMenu(state, 0)
+	isExitedByUser := false
 eventLoop:
 	for {
 		switch ev := term.PollEvent(); ev.Type {
@@ -106,14 +108,13 @@ eventLoop:
 			case term.KeyCtrlC:
 				fallthrough
 			case term.KeyCtrlZ:
-				fmt.Println("Exited.")
+				isExitedByUser = true
 				break eventLoop
 			case term.KeyArrowUp:
 				drawMenu(state, -1)
 			case term.KeyArrowDown:
 				drawMenu(state, 1)
 			case term.KeyEnter:
-				runCloner(state)
 				break eventLoop
 			default:
 				// we only want to read a single character or one key pressed event
@@ -124,15 +125,20 @@ eventLoop:
 			panic(ev.Err)
 		}
 	}
-	fmt.Println("DOnej")
-	// reader := bufio.NewReader(os.Stdin)
-	// fmt.Print("Enter text: ")
-	// text, _ := reader.ReadString('\n')
-	// fmt.Println(text)
+	term.Close()
+
+	if isExitedByUser {
+		fmt.Println("Exited by user.")
+		os.Exit(0)
+	}
+	printTitle()
+	runCloner(state)
+	fmt.Println("Done.")
 }
 
 func runCloner(state *MenuState) {
 	repoName := state.repos[state.selectedIndex].Name
+	fmt.Println("\nSelected Repo -", repoName)
 	fmt.Println("Cloning: ", repoName)
 	auth, err := getGitAuth()
 	if err != nil {
@@ -153,21 +159,46 @@ func runCloner(state *MenuState) {
 	// Parse generator config
 	raw, err := ioutil.ReadFile("./tmp/" + repoName + "/carbon.json")
 	if err != nil {
-		fmt.Println(err.Error())
+		fmt.Println("carbon.json doesn't exist, couldn't template this project.")
 		os.Exit(1)
 	}
 
 	var prompts []PromptConfig
 	json.Unmarshal(raw, &prompts)
 
-	// Ask for template input
-	fmt.Printf("%#v", string(raw))
-	fmt.Printf("\n%#v", prompts)
+	// Prompt for template input
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("\nProject name: ")
+	projectName, _ := reader.ReadString('\n')
+	projectName = strings.TrimSpace(projectName)
+
+	templateMap := make(map[string]string)
 	for _, x := range prompts {
-		fmt.Println(x.message)
+
+		prompt := x.Message + " "
+		if x.DefaultValue != "" {
+			prompt += "(" + x.DefaultValue + ") "
+		}
+		fmt.Printf(prompt)
+
+		text, _ := reader.ReadString('\n')
+		text = strings.TrimSpace(text)
+		if text != "" {
+			templateMap[x.Name] = strings.TrimSpace(text)
+		} else {
+			templateMap[x.Name] = x.DefaultValue
+		}
 	}
 
 	// Apply templating
+	a, err := template.New("test").Parse("{{.moduleName}} are made out of {{.description}}\n")
+	if err != nil {
+		panic(err)
+	}
+	err = a.Execute(os.Stdout, templateMap)
+	if err != nil {
+		panic(err)
+	}
 
 	// Copy to final dest
 }
