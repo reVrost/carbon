@@ -2,30 +2,20 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"strings"
 
-	"git.campmon.com/kenleyb/carbon/pkg/tmpl"
+	"git.campmon.com/kenleyb/carbon/pkg/carbon"
 
-	repo "git.campmon.com/kenleyb/carbon/pkg/repo"
 	"github.com/fatih/color"
 	term "github.com/nsf/termbox-go"
 )
 
-type MenuState struct {
+type menuState struct {
 	selectedIndex int
-	repos         []repo.Repos
-}
-
-type PromptConfig struct {
-	Name         string `json:"name"`
-	Message      string `json:"message"`
-	DefaultValue string `json:"default_value,omitempty"`
-	PromptType   string `json:"prompt_type,omitempty"`
+	repos         []carbon.Repo
 }
 
 func printTitle() {
@@ -40,7 +30,7 @@ func printTitle() {
 	fmt.Println("  Project generator for the lazy dudes.")
 }
 
-func drawMenu(state *MenuState, delta int) {
+func drawMenu(state *menuState, delta int) {
 	term.Sync()
 	printTitle()
 	d := color.New(color.FgYellow, color.Bold)
@@ -60,9 +50,13 @@ func drawMenu(state *MenuState, delta int) {
 
 func main() {
 	apiURL, _ := url.Parse("https://git.campmon.com/api/v3")
-	collection := repo.NewCollection(apiURL, "507fe7c80e1024e93350934a2bdf775056bc7801", "kenleyb", repo.User)
-	fmt.Println("mama")
-	repos, err := collection.GetRepos()
+	c := carbon.New(&carbon.GitConfig{
+		APIUrl:         apiURL,
+		Token:          "507fe7c80e1024e93350934a2bdf775056bc7801",
+		CollectionName: "kenleyb",
+		Collection:     carbon.User,
+	})
+	repos, err := c.GetRepos()
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -71,7 +65,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	state := &MenuState{
+	state := &menuState{
 		repos:         repos,
 		selectedIndex: 0,
 	}
@@ -112,48 +106,23 @@ eventLoop:
 		fmt.Println("Exited by user.")
 		os.Exit(0)
 	}
+	runTemplator(state, c)
+}
+
+func runTemplator(state *menuState, c carbon.Templator) {
 	printTitle()
-	runCloner(state, collection)
-	fmt.Println("Done.")
-}
-
-func parsePromptConfig(repoDir string) ([]PromptConfig, error) {
-	// Parse generator config (Config Parser)
-	raw, err := ioutil.ReadFile(repoDir + "/carbon.json")
-	if err != nil {
-		return nil, err
-	}
-
-	var prompts []PromptConfig
-	json.Unmarshal(raw, &prompts)
-	return prompts, nil
-}
-
-func runCloner(state *MenuState, collection repo.ReposLister) {
 	// Grabbing Repo (Repo Fetcher/Template Fetcher)
 	repoName := state.repos[state.selectedIndex].Name
 	fmt.Println("\nSelected Repo -", repoName)
-	fmt.Println("Cloning: ", repoName)
-
-	templatesDir := "templates/"
-	os.RemoveAll(templatesDir)
-	repoDir := templatesDir + repoName
-
-	err := collection.CloneRepo(repoName, repoDir)
-	if err != nil {
-		fmt.Println("Couldn't clone repo "+repoName, err)
-		return
-	}
-	os.RemoveAll(repoDir + "/.git")
 
 	// Parse generator config (Config Parser)
-	prompts, err := parsePromptConfig(repoDir)
+	prompts, err := c.GetPrompts(repoName)
 	if err != nil {
-		fmt.Println("carbon.json couldn't be read, can't template this project.")
+		fmt.Println("templator prompts couldn't be read, can't template this project.")
 		os.Exit(1)
 	}
 
-	// Prompt for template input
+	// Prompts for template input
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Printf("\nProject name: ")
 	projectName, _ := reader.ReadString('\n')
@@ -161,11 +130,6 @@ func runCloner(state *MenuState, collection repo.ReposLister) {
 
 	if projectName == "" {
 		fmt.Println("Project name cannot be empty")
-		os.Exit(1)
-	}
-
-	if exists(projectName) {
-		fmt.Println("Dir " + projectName + " already exists")
 		os.Exit(1)
 	}
 
@@ -187,20 +151,14 @@ func runCloner(state *MenuState, collection repo.ReposLister) {
 		}
 	}
 
-	err = tmpl.ApplyDir(repoDir, projectName, templateMap)
+	fmt.Println("")
+	paths, err := c.Execute(repoName, projectName, templateMap)
+	for _, x := range paths {
+		fmt.Println(x)
+	}
 
 	if err != nil {
 		fmt.Println(err)
 	}
-}
-
-// exists returns true if file/dir exists
-func exists(filePath string) (exists bool) {
-	exists = true
-
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		exists = false
-	}
-
-	return
+	fmt.Println(projectName)
 }
