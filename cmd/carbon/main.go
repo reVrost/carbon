@@ -5,27 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"net/http"
+	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
-	"text/template"
 
+	"git.campmon.com/kenleyb/carbon/pkg/tmpl"
+
+	repo "git.campmon.com/kenleyb/carbon/pkg/repo"
 	"github.com/fatih/color"
 	term "github.com/nsf/termbox-go"
-	"github.com/spf13/viper"
-	"golang.org/x/crypto/ssh"
-	git "gopkg.in/src-d/go-git.v4"
-	gitssh "gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
-
-type Repos struct {
-	Name string `json:"name"`
-}
 
 type MenuState struct {
 	selectedIndex int
-	repos         []Repos
+	repos         []repo.Repos
 }
 
 type PromptConfig struct {
@@ -66,32 +59,20 @@ func drawMenu(state *MenuState, delta int) {
 }
 
 func main() {
-	viper.SetConfigName("config") // name of config file (without extension)
-	viper.AddConfigPath(".")      // optionally look for config in the working directory
-	token := "507fe7c80e1024e93350934a2bdf775056bc7801"
-	gitHost := "https://git.campmon.com/"
-	gitAPI := gitHost + "api/v3/"
-
-	req, err := http.NewRequest("GET", gitAPI+"users/kenleyb/repos", nil)
-	req.Header.Add("Authorization", `Bearer `+token)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	apiURL, _ := url.Parse("https://git.campmon.com/api/v3")
+	collection := repo.NewCollection(apiURL, "507fe7c80e1024e93350934a2bdf775056bc7801", "kenleyb", repo.User)
+	fmt.Println("mama")
+	repos, err := collection.GetRepos()
 	if err != nil {
-		fmt.Println("WDF")
-		return
+		fmt.Println(err)
 	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println("WDF")
-		return
+	if len(repos) == 0 {
+		fmt.Println("No templates available")
+		os.Exit(0)
 	}
-	var arr []Repos
-	_ = json.Unmarshal(body, &arr)
 
 	state := &MenuState{
-		repos:         arr,
+		repos:         repos,
 		selectedIndex: 0,
 	}
 
@@ -132,43 +113,45 @@ eventLoop:
 		os.Exit(0)
 	}
 	printTitle()
-	runCloner(state)
+	runCloner(state, collection)
 	fmt.Println("Done.")
 }
 
-func runCloner(state *MenuState) {
+func parsePromptConfig(repoDir string) ([]PromptConfig, error) {
+	// Parse generator config (Config Parser)
+	raw, err := ioutil.ReadFile(repoDir + "/carbon.json")
+	if err != nil {
+		return nil, err
+	}
+
+	var prompts []PromptConfig
+	json.Unmarshal(raw, &prompts)
+	return prompts, nil
+}
+
+func runCloner(state *MenuState, collection repo.ReposLister) {
 	// Grabbing Repo (Repo Fetcher/Template Fetcher)
 	repoName := state.repos[state.selectedIndex].Name
 	fmt.Println("\nSelected Repo -", repoName)
 	fmt.Println("Cloning: ", repoName)
-	auth, err := getGitAuth()
-	if err != nil {
-		fmt.Println("Authentication Failed. Please add you ssh public key to $HOME/.ssh/id_rsa.")
-	}
 
-	os.RemoveAll("./tmpl")
-	srcDir := "tmpl/carbon/"
-	repoDir := srcDir + repoName
-	_, err = git.PlainClone(repoDir, false, &git.CloneOptions{
-		URL:      "git@git.campmon.com:kenleyb/" + repoName + ".git",
-		Auth:     auth,
-		Progress: os.Stdout,
-	})
+	templatesDir := "templates/"
+	os.RemoveAll(templatesDir)
+	repoDir := templatesDir + repoName
+
+	err := collection.CloneRepo(repoName, repoDir)
 	if err != nil {
-		fmt.Println("WDF", err)
+		fmt.Println("Couldn't clone repo "+repoName, err)
 		return
 	}
 	os.RemoveAll(repoDir + "/.git")
 
 	// Parse generator config (Config Parser)
-	raw, err := ioutil.ReadFile(repoDir + "/carbon.json")
+	prompts, err := parsePromptConfig(repoDir)
 	if err != nil {
-		fmt.Println("carbon.json doesn't exist, couldn't template this project.")
+		fmt.Println("carbon.json couldn't be read, can't template this project.")
 		os.Exit(1)
 	}
-
-	var prompts []PromptConfig
-	json.Unmarshal(raw, &prompts)
 
 	// Prompt for template input
 	reader := bufio.NewReader(os.Stdin)
@@ -204,43 +187,11 @@ func runCloner(state *MenuState) {
 		}
 	}
 
-	// Copy to final dest
-	e := filepath.Walk(repoDir, func(path string, f os.FileInfo, err error) error {
-		destPath := projectName + strings.TrimPrefix(path, repoDir)
+	err = tmpl.ApplyDir(repoDir, projectName, templateMap)
 
-		fi, err := os.Stat(path)
-		if fi.Mode().IsDir() {
-			os.MkdirAll(destPath, os.ModePerm)
-			return nil
-		} else if !fi.Mode().IsRegular() {
-			// Not a file not a dir skip
-			return nil
-		}
-
-		fmt.Printf("%s, dst: %s\n", path, destPath)
-		err = TemplateFile(path, destPath, templateMap)
-		return err
-	})
-
-	if e != nil {
-		os.RemoveAll(projectName)
-		panic(e)
-	}
-}
-
-// getGitAuth grabs git authentication key from home dir, TODO: windows
-func getGitAuth() (*gitssh.PublicKeys, error) {
-	s := fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME"))
-	sshKey, err := ioutil.ReadFile(s)
 	if err != nil {
-		return nil, err
+		fmt.Println(err)
 	}
-	signer, err := ssh.ParsePrivateKey([]byte(sshKey))
-	if err != nil {
-		return nil, err
-	}
-	auth := &gitssh.PublicKeys{User: "git", Signer: signer}
-	return auth, nil
 }
 
 // exists returns true if file/dir exists
@@ -249,34 +200,6 @@ func exists(filePath string) (exists bool) {
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		exists = false
-	}
-
-	return
-}
-
-// TemplateFile copies a file from src to dst and applies text templating.
-func TemplateFile(src, dst string, templateMap map[string]string) (err error) {
-	_, err = os.Stat(src)
-	if err != nil {
-		return
-	}
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return
-	}
-	defer dstFile.Close()
-
-	tmpl, err := template.New(filepath.Base(src)).ParseFiles(src)
-	if err != nil {
-		fmt.Println("parse")
-		return
-	}
-
-	err = tmpl.ExecuteTemplate(dstFile, filepath.Base(src), templateMap)
-	if err != nil {
-		fmt.Println("Execute template error")
-		return
 	}
 
 	return
